@@ -1,0 +1,15 @@
+substitutions:
+  _API_URL: ""
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - apps/web/Dockerfile
+      - -t
+      - gcr.io/$PROJECT_ID/swiftspeak-web
+      - --build-arg
+      - NEXT_PUBLIC_API_URL=${_API_URL}
+      - .
+images:
+  - gcr.io/$PROJECT_ID/swiftspeak-web

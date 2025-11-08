@@ -1,0 +1,32 @@
+# ---------- build stage: compile TS inside the image ----------
+FROM node:20-alpine AS build
+WORKDIR /workspace
+
+# Copy monorepo root files
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+
+# Copy workspaces and API sources
+COPY packages ./packages
+COPY apps/api ./apps/api
+COPY seed ./seed
+
+# Install and build inside the container
+RUN corepack enable && pnpm install --frozen-lockfile
+RUN pnpm --filter @swiftspeak/shared build && pnpm --filter api build
+RUN ls -la apps/api/dist
+
+# ---------- runtime stage: minimal deps, just run compiled JS ----------
+FROM node:20-alpine
+WORKDIR /app
+ENV NODE_ENV=production PORT=8080
+
+# Bring compiled JS + seeds from build stage
+COPY --from=build /workspace/apps/api/dist ./dist
+COPY --from=build /workspace/seed ./seed
+
+# Install only the runtime deps (no monorepo in runtime)
+RUN npm init -y >/dev/null 2>&1 \
+ && npm i --omit=dev express cors nanoid
+
+EXPOSE 8080
+CMD ["node", "dist/index.js"]

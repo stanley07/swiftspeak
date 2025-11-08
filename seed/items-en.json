@@ -1,0 +1,7 @@
+[
+  {"id":"en_1","lang":"en","type":"phrase","text_native":"How are you today?","gloss_en":"Greeting"},
+  {"id":"en_2","lang":"en","type":"phrase","text_native":"Nice to meet you","gloss_en":"Polite phrase"},
+  {"id":"en_3","lang":"en","type":"phrase","text_native":"Please speak slowly","gloss_en":"Request"},
+  {"id":"en_4","lang":"en","type":"phrase","text_native":"Could you repeat that?","gloss_en":"Request"},
+  {"id":"en_5","lang":"en","type":"phrase","text_native":"Where are you from?","gloss_en":"Question"}
+]

@@ -1,0 +1,14 @@
+FROM node:20-alpine
+WORKDIR /app
+ENV NODE_ENV=production PORT=8080
+
+# copy only what the runtime needs (compiled JS + seeds)
+COPY apps/api/dist ./dist
+COPY seed ./seed
+
+# install minimal runtime deps (no monorepo)
+RUN npm init -y >/dev/null 2>&1 \
+ && npm i --omit=dev express cors nanoid
+
+EXPOSE 8080
+CMD ["node", "dist/index.js"]

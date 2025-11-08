@@ -1,0 +1,7 @@
+[
+  {"id":"ig_1","lang":"ig","type":"phrase","text_native":"Ụtụtụ ọma","gloss_en":"Good morning"},
+  {"id":"ig_2","lang":"ig","type":"phrase","text_native":"Mgbede ọma","gloss_en":"Good evening"},
+  {"id":"ig_3","lang":"ig","type":"phrase","text_native":"Kedu?","gloss_en":"How are you?"},
+  {"id":"ig_4","lang":"ig","type":"phrase","text_native":"Daalụ","gloss_en":"Thank you"},
+  {"id":"ig_5","lang":"ig","type":"phrase","text_native":"Biko","gloss_en":"Please"}
+]

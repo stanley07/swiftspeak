@@ -1,0 +1,7 @@
+[
+  {"id":"ha_1","lang":"ha","type":"phrase","text_native":"Ina kwana","gloss_en":"Good morning"},
+  {"id":"ha_2","lang":"ha","type":"phrase","text_native":"Ina yini","gloss_en":"Good afternoon"},
+  {"id":"ha_3","lang":"ha","type":"phrase","text_native":"Yaya kake?","gloss_en":"How are you? (to male)"},
+  {"id":"ha_4","lang":"ha","type":"phrase","text_native":"Nagode","gloss_en":"Thank you"},
+  {"id":"ha_5","lang":"ha","type":"phrase","text_native":"Don Allah","gloss_en":"Please"}
+]
