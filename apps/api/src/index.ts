@@ -18,5 +18,5 @@ app.use('/api/attempt', attemptRouter);
 app.use('/api/review', reviewRouter);
 app.use('/api/metrics', metricsRouter);
 
-const port = Number(process.env.PORT || 8080);
+const port = Number(process.env.PORT || 8081);
 app.listen(port, '0.0.0.0', () => console.log(`API listening on ${port}`));
