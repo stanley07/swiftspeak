@@ -11,7 +11,10 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages ./packages
 COPY apps/web ./apps/web
 
-RUN corepack enable && pnpm i --frozen-lockfile
+# Fix: Install all dependencies aggressively in the build stage
+# We assume local Tailwind setup is complete now.
+RUN corepack enable && pnpm install --frozen-lockfile
+
 # Build SDK first, then web (produces .next/standalone)
 RUN pnpm --filter @swiftspeak/sdk build
 RUN pnpm --filter web build
@@ -19,7 +22,7 @@ RUN pnpm --filter web build
 RUN mkdir -p apps/web/public
 
 # ---- runtime stage ----
-FROM node:20-alpine
+FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production PORT=8080 HOSTNAME=0.0.0.0
 
