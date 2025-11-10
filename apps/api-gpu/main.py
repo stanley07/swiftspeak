@@ -9,6 +9,10 @@ import nanoid
 import os
 from typing import Literal
 from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
+
+# --- Load Environment Variables ---
+load_dotenv() # This loads your .env file
 
 # --- Imports for GCP ---
 from google.cloud import firestore
@@ -17,7 +21,6 @@ from google.cloud import texttospeech
 from google.cloud import storage
 import vertexai
 from vertexai.generative_models import GenerativeModel, Part
-# --- NEW: Import for fixing the Firestore warning ---
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 
@@ -38,8 +41,7 @@ db = firestore.Client()
 # --- TTS and Storage Clients ---
 tts_client = texttospeech.TextToSpeechClient()
 storage_client = storage.Client()
-# !!! REMINDER: Make sure this is your bucket name !!!
-AUDIO_BUCKET_NAME = "swifttalk" # <--- This should be your bucket name
+AUDIO_BUCKET_NAME = "swifttalk" # <--- Make sure this is your bucket name
 
 # --- VERTEX AI (GEMINI) SETUP ---
 GCP_PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
@@ -75,20 +77,40 @@ async def get_ai_hint(correct_text, user_text, score):
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 print(f"--- Loading model on {device} ---")
-model_id = "distil-whisper/distil-large-v3"
-model = AutoModelForSpeechSeq2Seq.from_pretrained(model_id, dtype=dtype, low_cpu_mem_usage=True, use_safetensors=True)
-model.to(device)
-processor = AutoProcessor.from_pretrained(model_id)
-speech_pipeline = pipeline(
-    "automatic-speech-recognition",
-    model=model,
-    tokenizer=processor.tokenizer,
-    feature_extractor=processor.feature_extractor,
-    max_new_tokens=128,
-    dtype=dtype,
-    device=device,
-    return_attention_mask=True,
+
+# --- THIS IS YOUR NEW LOGIC ---
+# Get Model Directory from Environment Variable
+MODEL_DIR = os.environ.get("MODEL_DIR")
+use_local_files = False
+model_id = "distil-whisper/distil-large-v3" # Default to Hugging Face
+
+if MODEL_DIR:
+    # If MODEL_DIR is set (e.g., "/app/model" in production)
+    # Load from that local path
+    model_id = MODEL_DIR
+    use_local_files = True
+    print(f"Loading model from local path: {model_id}")
+else:
+    # If not set (e.g., local dev without .env)
+    # Download from Hugging Face
+    print(f"WARNING: MODEL_DIR not set. Downloading model {model_id} from Hugging Face.")
+    print("This will be slow. For faster local dev, run download_model.py and set MODEL_DIR=./model in your .env file")
+# --- END NEW LOGIC ---
+
+model = AutoModelForSpeechSeq2Seq.from_pretrained(
+    model_id, 
+    dtype=dtype, 
+    low_cpu_mem_usage=True, 
+    use_safetensors=True, 
+    local_files_only=use_local_files
 )
+model.to(device)
+processor = AutoProcessor.from_pretrained(
+    model_id, 
+    local_files_only=use_local_files
+)
+
+# --- (The rest of your main.py file is unchanged) ---
 
 # --- MOCK PHRASE LIST (for seeding) ---
 mock_db_phrases = [
@@ -182,7 +204,6 @@ def get_or_create_audio(phrase_doc):
 
         print(f"Audio cache MISS for {file_name}. Generating...")
         
-        # --- Generate TTS Audio ---
         phrase_data = phrase_doc.to_dict()
         synthesis_input = texttospeech.SynthesisInput(text=phrase_data.get("text_native"))
         voice = texttospeech.VoiceSelectionParams(
@@ -196,13 +217,7 @@ def get_or_create_audio(phrase_doc):
             input=synthesis_input, voice=voice, audio_config=audio_config
         )
         
-        # --- Save to Cloud Storage ---
         blob.upload_from_string(response.audio_content, content_type="audio/mpeg")
-        
-        # --- THIS LINE IS REMOVED ---
-        # blob.make_public() 
-        # --- We now rely on the bucket's "allUsers:StorageObjectViewer" permission ---
-        
         return blob.public_url
 
     except Exception as e:
@@ -217,19 +232,13 @@ class StartSessionRequest(BaseModel):
 @app.post("/api/session/start")
 def start_session(request: StartSessionRequest):
     print(f"Starting session for lang={request.lang}, topic={request.topic}")
-    
     try:
-        # --- FIXED: Use FieldFilter to fix the UserWarning ---
-        query = db.collection('phrases') \
-                  .where(filter=FieldFilter('lang', '==', request.lang)) \
-                  .where(filter=FieldFilter('topic', '==', request.topic))
+        query = db.collection('phrases').where(filter=FieldFilter('lang', '==', request.lang)).where(filter=FieldFilter('topic', '==', request.topic))
         phrase_docs = list(query.stream())
     
         if not phrase_docs:
             print(f"No items found for topic '{request.topic}'. Falling back to 'greetings'.")
-            query = db.collection('phrases') \
-                      .where(filter=FieldFilter('lang', '==', request.lang)) \
-                      .where(filter=FieldFilter('topic', '==', 'greetings'))
+            query = db.collection('phrases').where(filter=FieldFilter('lang', '==', request.lang)).where(filter=FieldFilter('topic', '==', 'greetings'))
             phrase_docs = list(query.stream())
             
         items_to_send = []
@@ -250,10 +259,8 @@ def start_session(request: StartSessionRequest):
 @app.get("/api/review/next")
 def get_next_reviews(userId: str, lang: str = 'en', limit: int = 10):
     now = datetime.now(timezone.utc)
-    # --- FIXED: Use FieldFilter to fix the UserWarning ---
     query = db.collection('user_progress').document(userId).collection('phrases') \
-              .where(filter=FieldFilter('lang', '==', lang)) \
-              .where(filter=FieldFilter('dueAt', '<=', now)) \
+              .where(filter=FieldFilter('lang', '==', lang)).where(filter=FieldFilter('dueAt', '<=', now)) \
               .order_by('dueAt').limit(limit)
     items = []
     for doc in query.stream():
@@ -283,3 +290,41 @@ async def handle_text_attempt(attempt: TextAttempt):
     correct_text = phrase_doc.get('text_native').lower().strip()
     user_text = attempt.answerText.lower().strip()
     score = fuzz.ratio(correct_text, user_text) / 100
+    
+    hint = await get_ai_hint(correct_text, user_text, score)
+    
+    grade = 4 if score > 0.8 else 2
+    progress_data, progress_ref = get_or_create_progress_doc(attempt.userId, attempt.itemId)
+    new_srs = calculate_srs(progress_data['ef'], progress_data['intervalDays'], grade)
+    progress_data.update(new_srs); progress_data['lastReviewed'] = datetime.now(timezone.utc)
+    progress_ref.set(progress_data)
+    
+    return {"id": f"attempt_{nanoid.generate()}", "score": score, "hint": hint, "transcription": user_text}
+
+@app.post("/api/attempt")
+async def handle_attempt(
+    audio_file: UploadFile = File(...), 
+    itemId: str = Form(...),
+    userId: str = Form(...)
+):
+    print(f"Received attempt for item: {itemId} by user: {userId}")
+    phrase_doc = get_phrase_doc(itemId)
+    if not phrase_doc.exists: return {"error": "Item not found", "score": 0}
+    correct_text = phrase_doc.get('text_native').lower().strip()
+    audio_bytes = await audio_file.read()
+    transcription_result = speech_pipeline(audio_bytes)
+    user_text = transcription_result["text"].lower().strip()
+    score = fuzz.ratio(correct_text, user_text) / 100
+
+    hint = await get_ai_hint(correct_text, user_text, score)
+    
+    grade = 4 if score > 0.8 else 2
+    progress_data, progress_ref = get_or_create_progress_doc(userId, itemId)
+    new_srs = calculate_srs(progress_data['ef'], progress_data['intervalDays'], grade)
+    progress_data.update(new_srs); progress_data['lastReviewed'] = datetime.now(timezone.utc)
+    progress_ref.set(progress_data)
+    
+    return {"id": f"attempt_{itemId}", "score": score, "hint": hint, "transcription": user_text}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8080)

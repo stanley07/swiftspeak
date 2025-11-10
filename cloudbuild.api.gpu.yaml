@@ -1,0 +1,6 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'Dockerfile', '-t', 'europe-west1-docker.pkg.dev/$PROJECT_ID/swiftspeak/swiftspeak-api-gpu:latest', '.']
+    dir: 'apps/api-gpu'
+images:
+  - 'europe-west1-docker.pkg.dev/$PROJECT_ID/swiftspeak/swiftspeak-api-gpu:latest'

@@ -1,15 +1,28 @@
 substitutions:
   _API_URL: ""
 steps:
+  # Enable corepack to use pnpm
+  - name: 'node:20'
+    entrypoint: 'corepack'
+    args: ['enable']
+  # Install dependencies
+  - name: 'node:20'
+    entrypoint: 'npx'
+    args: ['pnpm', 'install']
+  # Build the entire workspace
+  - name: 'node:20'
+    entrypoint: 'npx'
+    args: ['pnpm', 'build']
+  # Build the web image
   - name: gcr.io/cloud-builders/docker
     args:
       - build
       - -f
       - apps/web/Dockerfile
       - -t
-      - gcr.io/$PROJECT_ID/swiftspeak-web
+      - europe-west1-docker.pkg.dev/$PROJECT_ID/swiftspeak/swiftspeak-web:latest
       - --build-arg
       - NEXT_PUBLIC_API_URL=${_API_URL}
       - .
 images:
-  - gcr.io/$PROJECT_ID/swiftspeak-web
+  - europe-west1-docker.pkg.dev/$PROJECT_ID/swiftspeak/swiftspeak-web:latest

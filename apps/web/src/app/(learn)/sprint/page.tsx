@@ -119,6 +119,10 @@ export default function Sprint() {
     window.speechSynthesis.speak(utterance);
   }, [lang, voices]);
 
+  const playTranscriptionText = useCallback((text: string) => {
+    pronounceText(text);
+  }, [pronounceText]);
+
   const handlePlayAudio = async (item: any) => {
     if (item.audioUrl) {
       try {
@@ -257,7 +261,16 @@ export default function Sprint() {
             </div>
             <div className="p-3 bg-gray-50 rounded-md">
               <div className="text-sm font-medium text-gray-500">Your answer:</div>
-              <div className="text-gray-800 italic">{lastResult.transcription}</div>
+              <div className="flex items-center justify-center gap-3 mt-1">
+                <div className="text-lg text-gray-800 italic">{lastResult.transcription}</div>
+                <button
+                  onClick={() => playTranscriptionText(lastResult.transcription)}
+                  className="text-blue-600 hover:text-blue-800"
+                  title="Play your transcription"
+                >
+                  <SpeakerIcon />
+                </button>
+              </div>
             </div>
             
             <div className="p-3 bg-blue-50 border border-blue-200 rounded-md">

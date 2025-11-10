@@ -1,11 +1,14 @@
 fastapi
 uvicorn[standard]
+torch
 transformers
 python-multipart
-python-levenshtein
+rapidfuzz
+pydantic
 nanoid
+python-dotenv
 google-cloud-firestore
 google-cloud-aiplatform
-python-dotenv
 google-cloud-texttospeech
 google-cloud-storage
+huggingface_hub
