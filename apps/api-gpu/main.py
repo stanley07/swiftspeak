@@ -49,9 +49,11 @@ if not GCP_PROJECT_ID:
     print("WARNING: GCP_PROJECT_ID not set. AI hints will be disabled.")
 else:
     try:
-        aiplatform.init(project=GCP_PROJECT_ID, location="us-central1")
-        gemini_model = GenerativeModel("gemini-pro")
-        print("--- Vertex AI Gemini model 'gemini-pro' loaded ---")
+        # --- THIS IS THE FIX ---
+        # Initializing in the correct GPU region per hackathon rules
+        aiplatform.init(project=GCP_PROJECT_ID, location="europe-west1")
+        gemini_model = GenerativeModel("gemini-pro") # Using gemini-pro for stability
+        print("--- Vertex AI Gemini model 'gemini-pro' loaded in europe-west1 ---")
     except Exception as e:
         print(f"!!! FAILED to load Gemini: {e}")
         print("!!! AI hints will be disabled.")
