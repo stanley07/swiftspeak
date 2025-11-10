@@ -1,14 +1,17 @@
 'use client';
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { Toaster, toast } from 'react-hot-toast';
+import { getUserId } from '../../userId';
+import SpeakerIcon from './SpeakerIcon'; // <-- Import the new icon
 
 // --- API SDK FUNCTIONS ---
 const BASE = process.env.NEXT_PUBLIC_GPU_API_URL || 'http://localhost:8080';
 
 async function postAttemptWithAudio(itemId: string, audioBlob: Blob) {
   const formData = new FormData();
-  formData.append('audio_file', audioBlob, 'attempt.audio');
+  formData.append('audio_file', audioBlob, 'attempt.audio'); // Generic name
   formData.append('itemId', itemId);
+  formData.append('userId', getUserId());
   const r = await fetch(`${BASE}/api/attempt`, { method: 'POST', body: formData });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
@@ -18,7 +21,7 @@ async function postAttemptWithText(itemId: string, answerText: string) {
   const r = await fetch(`${BASE}/api/attempt/text`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ itemId, answerText }),
+    body: JSON.stringify({ itemId, answerText, userId: getUserId() }),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
@@ -29,44 +32,134 @@ async function postAttemptWithText(itemId: string, answerText: string) {
 export default function Sprint() {
   const [items, setItems] = useState<any[]>([]);
   const [i, setI] = useState(0);
-  const [t, setT] = useState(90);
+  const [t, setT] = useState(60);
   const [ready, setReady] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [lastResult, setLastResult] = useState<any | null>(null);
   const [mode, setMode] = useState<'audio' | 'text'>('audio');
   const [textAnswer, setTextAnswer] = useState('');
+  const [lang, setLang] = useState('');
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  
+  // --- Audio State ---
   const [isRecording, setIsRecording] = useState(false);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  
+  const promptAudioRef = useRef<HTMLAudioElement | null>(null);
+  const userAudioRef = useRef<HTMLAudioElement | null>(null);
+  
   const [audioMimeType, setAudioMimeType] = useState('');
 
+
+  // Load session on mount
   useEffect(() => {
     const s = sessionStorage.getItem('items');
     setItems(s ? JSON.parse(s) : []);
+    const sLang = sessionStorage.getItem('lang');
+    setLang(sLang || 'en');
     setReady(true);
+
+    // Load speech synthesis voices
+    const loadVoices = () => {
+        const availableVoices = window.speechSynthesis.getVoices();
+        if (availableVoices.length > 0) {
+            setVoices(availableVoices);
+        }
+    };
+
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+        loadVoices();
+        window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
   }, []);
 
+  // Countdown timer
   useEffect(() => {
     const id = setInterval(() => setT((x) => (x > 0 ? x - 1 : 0)), 1000);
     return () => clearInterval(id);
   }, []);
 
+  // --- **** THIS FUNCTION IS NOW FIXED **** ---
+  // It now includes a try/catch to prevent crashes
+  const playPromptAudio = async (audioUrl: string) => {
+    if (promptAudioRef.current && audioUrl) {
+      promptAudioRef.current.src = audioUrl;
+      await promptAudioRef.current.play(); // This will throw if it fails
+    }
+  };
+  // --- **** END OF FIX **** ---
+
+  const pronounceText = useCallback((text: string) => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) {
+        toast.error("Your browser doesn't support speech synthesis.");
+        return;
+    }
+
+    // Map app lang codes to BCP 47 codes
+    const langMap: { [key: string]: string } = {
+        en: 'en-US',
+        yo: 'yo-NG',
+        ig: 'ig-NG',
+        ha: 'ha-NG',
+    };
+    const speechLang = langMap[lang as keyof typeof langMap] || 'en-US';
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = speechLang;
+
+    const voice = voices.find(v => v.lang === speechLang);
+    if (voice) {
+        utterance.voice = voice;
+    } else {
+        console.warn(`No voice found for lang: ${speechLang}. Using browser default.`);
+    }
+
+    window.speechSynthesis.speak(utterance);
+  }, [lang, voices]);
+
+  const handlePlayAudio = async (item: any) => {
+    if (item.audioUrl) {
+      try {
+        await playPromptAudio(item.audioUrl);
+      } catch (err) {
+        console.error("Failed to play audio from URL, falling back to TTS:", err);
+        toast.error("Audio file failed, using browser voice.");
+        pronounceText(item.text_native); // Fallback to TTS
+      }
+    } else {
+      // Fallback to browser TTS if no URL
+      pronounceText(item.text_native);
+    }
+  };
+
+
+  // --- Audio Recording Logic (with NotSupportedError fix) ---
   const startRecording = async () => {
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
       mediaRecorderRef.current = new MediaRecorder(stream);
+      
       mediaRecorderRef.current.onstart = () => {
         setAudioMimeType(mediaRecorderRef.current!.mimeType);
       };
+
       mediaRecorderRef.current.ondataavailable = (event) => {
         audioChunksRef.current.push(event.data);
       };
+      
       mediaRecorderRef.current.onstop = () => {
         const blob = new Blob(audioChunksRef.current, { type: audioMimeType });
         setAudioBlob(blob);
         audioChunksRef.current = [];
+        
+        if(userAudioRef.current) {
+          userAudioRef.current.src = URL.createObjectURL(blob);
+        }
       };
+      
       mediaRecorderRef.current.start();
       setIsRecording(true);
       setAudioBlob(null);
@@ -81,7 +174,9 @@ export default function Sprint() {
       setIsRecording(false);
     }
   };
+  // --- End Audio Logic ---
 
+  
   const nextItem = useCallback(() => {
     setAudioBlob(null);
     setTextAnswer('');
@@ -92,16 +187,12 @@ export default function Sprint() {
   const onSubmit = useCallback(async () => {
     const item = items[i];
     if (mode === 'audio' && !audioBlob) {
-      toast.error("Please record your audio first!");
-      return;
+      toast.error("Please record your audio first!"); return;
     }
     if (mode === 'text' && !textAnswer.trim()) {
-      toast.error("Please type your answer first!");
-      return;
+      toast.error("Please type your answer first!"); return;
     }
-    
     setIsLoading(true);
-    
     try {
       let res;
       if (mode === 'audio') {
@@ -110,7 +201,6 @@ export default function Sprint() {
         res = await postAttemptWithText(item.id, textAnswer);
       }
       setLastResult(res); 
-
     } catch (error) {
       console.error(error);
       toast.error("Failed to submit attempt.");
@@ -126,6 +216,8 @@ export default function Sprint() {
 
   return (
     <div className="space-y-4 max-w-2xl mx-auto">
+      <audio ref={promptAudioRef} className="hidden" />
+      
       <Toaster position="top-center" />
       <div className="flex justify-between items-center py-2">
         <h2 className="text-xl font-semibold">Sprint</h2>
@@ -135,7 +227,17 @@ export default function Sprint() {
       </div>
 
       <div className="bg-white shadow-md rounded-xl p-6 text-center">
-        <div className="text-4xl font-medium text-gray-900">{item.text_native}</div>
+        
+        <div className="flex items-center justify-center gap-3">
+          <div className="text-4xl font-medium text-gray-900">{item.text_native}</div>
+          <button
+            onClick={() => handlePlayAudio(item)}
+            className="text-blue-500 hover:text-blue-700"
+            title="Play audio"
+          >
+            <SpeakerIcon />
+          </button>
+        </div>
         <div className="text-xl text-gray-500 mt-2">{item.gloss_en}</div>
       </div>
 
@@ -158,12 +260,10 @@ export default function Sprint() {
               <div className="text-gray-800 italic">{lastResult.transcription}</div>
             </div>
             
-            {/* --- THIS IS THE NEW BLOCK TO SHOW THE HINT --- */}
             <div className="p-3 bg-blue-50 border border-blue-200 rounded-md">
               <div className="text-sm font-medium text-blue-700">Gemini's Hint:</div>
               <div className="text-blue-900">{lastResult.hint}</div>
             </div>
-            {/* --- END NEW BLOCK --- */}
 
             <button
               className="w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-500"
@@ -200,9 +300,9 @@ export default function Sprint() {
                 <div className="text-center text-sm text-gray-600">
                   {isRecording ? "Recording..." : (audioBlob ? "Ready to submit!" : "Click record to speak")}
                 </div>
-                {audioBlob && (
-                  <audio src={URL.createObjectURL(audioBlob)} controls className="w-full" />
-                )}
+                
+                <audio ref={userAudioRef} controls className={`w-full ${!audioBlob ? 'hidden' : ''}`} />
+                
                 <div className="mt-2 flex gap-3">
                   {!isRecording ? (
                     <button
@@ -221,12 +321,12 @@ export default function Sprint() {
                   )}
                   <button
                     className={`flex-1 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm ${
-                      !audioBlob ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-500'
+                      !audioBlob || isLoading ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-500'
                     }`}
                     onClick={onSubmit}
-                    disabled={!audioBlob}
+                    disabled={!audioBlob || isLoading}
                   >
-                    Submit
+                    {isLoading ? 'Scoring...' : 'Submit'}
                   </button>
                 </div>
               </div>
@@ -243,12 +343,12 @@ export default function Sprint() {
                 />
                 <button
                   className={`w-full rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm ${
-                    !textAnswer.trim() ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-500'
+                    !textAnswer.trim() || isLoading ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-500'
                   }`}
                   onClick={onSubmit}
-                  disabled={!textAnswer.trim()}
+                  disabled={!textAnswer.trim() || isLoading}
                 >
-                  Submit
+                  {isLoading ? 'Scoring...' : 'Submit'}
                 </button>
               </div>
             )}

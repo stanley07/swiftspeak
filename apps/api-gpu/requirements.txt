@@ -4,4 +4,8 @@ transformers
 python-multipart
 python-levenshtein
 nanoid
-google-generativeai
+google-cloud-firestore
+google-cloud-aiplatform
+python-dotenv
+google-cloud-texttospeech
+google-cloud-storage

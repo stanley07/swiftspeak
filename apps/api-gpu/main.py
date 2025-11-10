@@ -7,8 +7,19 @@ from rapidfuzz import fuzz
 from pydantic import BaseModel
 import nanoid
 import os
-import google.generativeai as genai
 from typing import Literal
+from datetime import datetime, timedelta, timezone
+
+# --- Imports for GCP ---
+from google.cloud import firestore
+from google.cloud import aiplatform
+from google.cloud import texttospeech
+from google.cloud import storage
+import vertexai
+from vertexai.generative_models import GenerativeModel, Part
+# --- NEW: Import for fixing the Firestore warning ---
+from google.cloud.firestore_v1.base_query import FieldFilter
+
 
 app = FastAPI()
 
@@ -21,28 +32,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- GEMINI SETUP ---
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    print("WARNING: GEMINI_API_KEY not set. AI hints will be disabled.")
-else:
-    genai.configure(api_key=GEMINI_API_KEY)
+# --- FIRESTORE SETUP ---
+db = firestore.Client()
 
-gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+# --- TTS and Storage Clients ---
+tts_client = texttospeech.TextToSpeechClient()
+storage_client = storage.Client()
+# !!! REMINDER: Make sure this is your bucket name !!!
+AUDIO_BUCKET_NAME = "swifttalk" # <--- This should be your bucket name
+
+# --- VERTEX AI (GEMINI) SETUP ---
+GCP_PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
+if not GCP_PROJECT_ID:
+    print("WARNING: GCP_PROJECT_ID not set. AI hints will be disabled.")
+else:
+    try:
+        aiplatform.init(project=GCP_PROJECT_ID, location="us-central1")
+        gemini_model = GenerativeModel("gemini-pro")
+        print("--- Vertex AI Gemini model 'gemini-pro' loaded ---")
+    except Exception as e:
+        print(f"!!! FAILED to load Gemini: {e}")
+        print("!!! AI hints will be disabled.")
+        GCP_PROJECT_ID = None # Disable hints if init fails
 
 async def get_ai_hint(correct_text, user_text, score):
-    if not GEMINI_API_KEY:
-        return "Check your spelling or pronunciation."
-    if score > 0.95:
-        return "Perfect!"
+    if not GCP_PROJECT_ID: return "Check your spelling or pronunciation."
+    if score > 0.95: return "Perfect!"
     try:
         prompt = f"""
         The user was trying to say this phrase: "{correct_text}"
         They actually said: "{user_text}"
         Their score was {int(score * 100)}/100.
-        Please provide a very short, one-sentence hint to help them improve.
-        Be encouraging. Address the user directly.
-        Example: "You're very close! Just watch the vowel sound in 'hello'."
+        Please provide a very short, one-sentence hint. Be encouraging.
         """
         response = await gemini_model.generate_content_async(prompt)
         return response.text.strip()
@@ -50,7 +71,7 @@ async def get_ai_hint(correct_text, user_text, score):
         print(f"Gemini error: {e}")
         return "Keep practicing!"
 
-# --- Load AI Model ---
+# --- Load Speech-to-Text Model ---
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 print(f"--- Loading model on {device} ---")
@@ -66,131 +87,199 @@ speech_pipeline = pipeline(
     max_new_tokens=128,
     dtype=dtype,
     device=device,
+    return_attention_mask=True,
 )
 
-# --- NEW: MOCK DATABASE (LIST OF OBJECTS) ---
-# We now add 'lang' and 'topic' to each item
-mock_db = [
-    # English
-    {"id": "en_1", "lang": "en", "topic": "greetings", "text_native": "How are you today?", "gloss_en": "Greeting"},
-    {"id": "en_2", "lang": "en", "topic": "greetings", "text_native": "Nice to meet you", "gloss_en": "Polite phrase"},
-    {"id": "en_3", "lang": "en", "topic": "travel", "text_native": "Where is the airport?", "gloss_en": "Question"},
-    {"id": "en_4", "lang": "en", "topic": "food", "text_native": "I would like to order water", "gloss_en": "Request"},
-    {"id": "en_5", "lang": "en", "topic": "business", "text_native": "What time is the meeting?", "gloss_en": "Question"},
-    {"id": "en_6", "lang": "en", "topic": "health", "text_native": "I need to see a doctor", "gloss_en": "Statement"},
-
-    # Yorùbá
-    {"id": "yo_1", "lang": "yo", "topic": "greetings", "text_native": "Ẹ káàrọ̀", "gloss_en": "Good morning"},
-    {"id": "yo_2", "lang": "yo", "topic": "greetings", "text_native": "Báwo ni?", "gloss_en": "How are you?"},
-    {"id": "yo_3", "lang": "yo", "topic": "food", "text_native": "Mo fẹ́ jẹun", "gloss_en": "I want to eat"},
-
-    # Ìgbò
-    {"id": "ig_1", "lang": "ig", "topic": "greetings", "text_native": "Ụtụtụ ọma", "gloss_en": "Good morning"},
-    {"id": "ig_2", "lang": "ig", "topic": "greetings", "text_native": "Kedu?", "gloss_en": "How are you?"},
-    {"id": "ig_3", "lang": "ig", "topic": "food", "text_native": "Biko nye m mmiri", "gloss_en": "Please give me water"},
-
-    # Hausa
-    {"id": "ha_1", "lang": "ha", "topic": "greetings", "text_native": "Ina kwana", "gloss_en": "Good morning"},
-    {"id": "ha_2", "lang": "ha", "topic": "greetings", "text_native": "Yaya kake?", "gloss_en": "How are you?"},
-    {"id": "ha_3", "lang": "ha", "topic": "travel", "text_native": "Ina tashar jirgi?", "gloss_en": "Where is the airport?"},
+# --- MOCK PHRASE LIST (for seeding) ---
+mock_db_phrases = [
+    {"id": "en_1", "lang": "en", "topic": "greetings", "text_native": "How are you today?", "gloss_en": "Greeting", "voice": "en-US-Standard-F"},
+    {"id": "en_2", "lang": "en", "topic": "greetings", "text_native": "Nice to meet you", "gloss_en": "Polite phrase", "voice": "en-US-Standard-F"},
+    {"id": "en_7", "lang": "en", "topic": "greetings", "text_native": "What's your name?", "gloss_en": "Question", "voice": "en-US-Standard-F"},
+    {"id": "en_3", "lang": "en", "topic": "travel", "text_native": "Where is the airport?", "gloss_en": "Question", "voice": "en-US-Standard-F"},
+    {"id": "en_8", "lang": "en", "topic": "travel", "text_native": "I need a taxi", "gloss_en": "Request", "voice": "en-US-Standard-F"},
+    {"id": "en_9", "lang": "en", "topic": "travel", "text_native": "Does this bus go to the city center?", "gloss_en": "Question", "voice": "en-US-Standard-F"},
+    {"id": "en_4", "lang": "en", "topic": "food", "text_native": "I would like to order water", "gloss_en": "Request", "voice": "en-US-Standard-F"},
+    {"id": "en_10", "lang": "en", "topic": "food", "text_native": "Can I see the menu, please?", "gloss_en": "Request", "voice": "en-US-Standard-F"},
+    {"id": "en_11", "lang": "en", "topic": "food", "text_native": "The check, please", "gloss_en": "Request", "voice": "en-US-Standard-F"},
+    {"id": "en_5", "lang": "en", "topic": "business", "text_native": "What time is the meeting?", "gloss_en": "Question", "voice": "en-US-Standard-F"},
+    {"id": "en_12", "lang": "en", "topic": "business", "text_native": "Here is my business card", "gloss_en": "Statement", "voice": "en-US-Standard-F"},
+    {"id": "en_13", "lang": "en", "topic": "business", "text_native": "Let's schedule a follow-up call", "gloss_en": "Suggestion", "voice": "en-US-Standard-F"},
+    {"id": "en_6", "lang": "en", "topic": "health", "text_native": "I need to see a doctor", "gloss_en": "Statement", "voice": "en-US-Standard-F"},
+    {"id": "en_14", "lang": "en", "topic": "health", "text_native": "Where is the nearest pharmacy?", "gloss_en": "Question", "voice": "en-US-Standard-F"},
+    {"id": "en_15", "lang": "en", "topic": "health", "text_native": "I have a headache", "gloss_en": "Statement", "voice": "en-US-Standard-F"},
+    {"id": "yo_1", "lang": "yo", "topic": "greetings", "text_native": "Ẹ káàrọ̀", "gloss_en": "Good morning", "voice": "yo-NG-Standard-A"},
+    {"id": "yo_2", "lang": "yo", "topic": "greetings", "text_native": "Báwo ni?", "gloss_en": "How are you?", "voice": "yo-NG-Standard-A"},
+    {"id": "yo_3", "lang": "yo", "topic": "food", "text_native": "Mo fẹ́ jẹun", "gloss_en": "I want to eat", "voice": "yo-NG-Standard-A"},
+    {"id": "yo_4", "lang": "yo", "topic": "greetings", "text_native": "Ẹ ṣé", "gloss_en": "Thank you", "voice": "yo-NG-Standard-A"},
+    {"id": "ig_1", "lang": "ig", "topic": "greetings", "text_native": "Ụtụtụ ọma", "gloss_en": "Good morning", "voice": "ig-NG-Standard-A"},
+    {"id": "ig_2", "lang": "ig", "topic": "greetings", "text_native": "Kedu?", "gloss_en": "How are you?", "voice": "ig-NG-Standard-A"},
+    {"id": "ig_3", "lang": "ig", "topic": "food", "text_native": "Biko nye m mmiri", "gloss_en": "Please give me water", "voice": "ig-NG-Standard-A"},
+    {"id": "ig_4", "lang": "ig", "topic": "greetings", "text_native": "Daalụ", "gloss_en": "Thank you", "voice": "ig-NG-Standard-A"},
+    {"id": "ha_1", "lang": "ha", "topic": "greetings", "text_native": "Ina kwana", "gloss_en": "Good morning", "voice": "ha-NG-Standard-A"},
+    {"id": "ha_2", "lang": "ha", "topic": "greetings", "text_native": "Yaya kake?", "gloss_en": "How are you?", "voice": "ha-NG-Standard-A"},
+    {"id": "ha_3", "lang": "ha", "topic": "travel", "text_native": "Ina tashar jirgi?", "gloss_en": "Where is the airport?", "voice": "ha-NG-Standard-A"},
+    {"id": "ha_4", "lang": "ha", "topic": "greetings", "text_native": "Nagode", "gloss_en": "Thank you", "voice": "ha-NG-Standard-A"},
 ]
 
-# --- Helper function to find text ---
-def get_correct_text(itemId: str):
-    for item in mock_db:
-        if item["id"] == itemId:
-            return item["text_native"].lower().strip()
-    return ""
+# --- Firestore Helpers ---
+def get_phrase_doc(itemId: str):
+    return db.collection('phrases').document(itemId).get()
 
+def get_or_create_progress_doc(userId: str, itemId: str):
+    progress_ref = db.collection('user_progress').document(userId).collection('phrases').document(itemId)
+    progress_doc = progress_ref.get()
+    if progress_doc.exists:
+        return progress_doc.to_dict(), progress_ref
+    else:
+        phrase_doc = get_phrase_doc(itemId)
+        if not phrase_doc.exists: return None, None
+        defaults = {
+            "ef": 2.5, "intervalDays": 0, "dueAt": datetime.now(timezone.utc),
+            "lang": phrase_doc.get("lang"), "text_native": phrase_doc.get("text_native"),
+            "gloss_en": phrase_doc.get("gloss_en")
+        }
+        progress_ref.set(defaults)
+        return defaults, progress_ref
+
+# --- SRS Logic ---
+def calculate_srs(ef: float, interval: int, grade: int):
+    if grade < 2:
+        new_interval = 1; new_ef = max(1.3, ef - 0.2)
+    else:
+        new_ef = max(1.3, ef + (0.1 - (5 - grade) * (0.08 + (5 - grade) * 0.02)))
+        if interval == 0: new_interval = 1
+        elif interval == 1: new_interval = 3
+        else: new_interval = round(interval * new_ef)
+    due_date = datetime.now(timezone.utc) + timedelta(days=new_interval)
+    return {"ef": round(new_ef, 2), "intervalDays": new_interval, "dueAt": due_date}
 
 # --- API Endpoints ---
 @app.get("/")
 def read_root():
     return {"status": "GPU API is running"}
 
-# NEW: Pydantic model for the session start request
+@app.post("/api/admin/seed")
+def seed_database():
+    batch = db.batch()
+    count = 0
+    for phrase in mock_db_phrases:
+        ref = db.collection('phrases').document(phrase['id'])
+        batch.set(ref, phrase)
+        count += 1
+    batch.commit()
+    return {"status": f"Seeded {count} phrases to Firestore"}
+
+# --- TTS Caching Function ---
+def get_or_create_audio(phrase_doc):
+    try:
+        bucket = storage_client.bucket(AUDIO_BUCKET_NAME)
+        file_name = f"{phrase_doc.id}.mp3"
+        blob = bucket.blob(file_name)
+
+        if blob.exists():
+            print(f"Audio cache HIT for {file_name}")
+            return blob.public_url
+
+        print(f"Audio cache MISS for {file_name}. Generating...")
+        
+        # --- Generate TTS Audio ---
+        phrase_data = phrase_doc.to_dict()
+        synthesis_input = texttospeech.SynthesisInput(text=phrase_data.get("text_native"))
+        voice = texttospeech.VoiceSelectionParams(
+            language_code=phrase_data.get("lang"),
+            name=phrase_data.get("voice")
+        )
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3
+        )
+        response = tts_client.synthesize_speech(
+            input=synthesis_input, voice=voice, audio_config=audio_config
+        )
+        
+        # --- Save to Cloud Storage ---
+        blob.upload_from_string(response.audio_content, content_type="audio/mpeg")
+        
+        # --- THIS LINE IS REMOVED ---
+        # blob.make_public() 
+        # --- We now rely on the bucket's "allUsers:StorageObjectViewer" permission ---
+        
+        return blob.public_url
+
+    except Exception as e:
+        print(f"Failed to generate/cache audio for {phrase_doc.id}: {e}")
+        return None
+
 class StartSessionRequest(BaseModel):
     lang: Literal["en", "yo", "ig", "ha"] = "en"
     topic: str = "greetings"
-    level: str = "A1" # We're not using level yet, but it's good to have
+    level: str = "A1"
 
-# NEW: UPDATED SESSION START ENDPOINT
 @app.post("/api/session/start")
 def start_session(request: StartSessionRequest):
     print(f"Starting session for lang={request.lang}, topic={request.topic}")
     
-    # Filter the DB based on lang and topic
-    items_to_send = [
-        item for item in mock_db 
-        if item["lang"] == request.lang and item["topic"] == request.topic
-    ]
+    try:
+        # --- FIXED: Use FieldFilter to fix the UserWarning ---
+        query = db.collection('phrases') \
+                  .where(filter=FieldFilter('lang', '==', request.lang)) \
+                  .where(filter=FieldFilter('topic', '==', request.topic))
+        phrase_docs = list(query.stream())
     
-    # If no items match, fall back to just language
-    if not items_to_send:
-        items_to_send = [item for item in mock_db if item["lang"] == request.lang]
+        if not phrase_docs:
+            print(f"No items found for topic '{request.topic}'. Falling back to 'greetings'.")
+            query = db.collection('phrases') \
+                      .where(filter=FieldFilter('lang', '==', request.lang)) \
+                      .where(filter=FieldFilter('topic', '==', 'greetings'))
+            phrase_docs = list(query.stream())
             
-    return {
-        "sessionId": f"sess_{nanoid.generate()}",
-        "items": items_to_send[:10] # Send up to 10 items
-    }
+        items_to_send = []
+        for doc in phrase_docs[:10]:
+            item_data = doc.to_dict()
+            item_data["audioUrl"] = get_or_create_audio(doc)
+            items_to_send.append(item_data)
 
-# Pydantic model for the text attempt
+        return {
+            "sessionId": f"sess_{nanoid.generate()}",
+            "items": items_to_send
+        }
+    except Exception as e:
+        print(f"Error querying Firestore: {e}")
+        return {"sessionId": nanoid.generate(), "items": []}
+
+
+@app.get("/api/review/next")
+def get_next_reviews(userId: str, lang: str = 'en', limit: int = 10):
+    now = datetime.now(timezone.utc)
+    # --- FIXED: Use FieldFilter to fix the UserWarning ---
+    query = db.collection('user_progress').document(userId).collection('phrases') \
+              .where(filter=FieldFilter('lang', '==', lang)) \
+              .where(filter=FieldFilter('dueAt', '<=', now)) \
+              .order_by('dueAt').limit(limit)
+    items = []
+    for doc in query.stream():
+        item_data = doc.to_dict(); item_data['id'] = doc.id; items.append(item_data)
+    return {"items": items}
+
+class GradeRequest(BaseModel):
+    userId: str; itemId: str; grade: int
+
+@app.post("/api/review/grade")
+def post_review_grade(request: GradeRequest):
+    progress_data, progress_ref = get_or_create_progress_doc(request.userId, request.itemId)
+    if not progress_data: return {"error": "Item not found"}
+    new_srs = calculate_srs(progress_data['ef'], progress_data['intervalDays'], request.grade)
+    progress_data.update(new_srs); progress_data['lastReviewed'] = datetime.now(timezone.utc)
+    progress_ref.set(progress_data)
+    return {"nextDueAt": new_srs['dueAt']}
+
 class TextAttempt(BaseModel):
-    itemId: str
-    answerText: str
+    itemId: str; answerText: str; userId: str
 
-# NEW: UPDATED TEXT ATTEMPT ENDPOINT
 @app.post("/api/attempt/text")
 async def handle_text_attempt(attempt: TextAttempt):
-    print(f"Received text attempt for item: {attempt.itemId}")
-    
-    # Use helper function to find the text
-    correct_text = get_correct_text(attempt.itemId)
-    if not correct_text:
-        return {"error": "Item not found", "score": 0}
-
+    print(f"Received text attempt for item: {attempt.itemId} by user: {attempt.userId}")
+    phrase_doc = get_phrase_doc(attempt.itemId)
+    if not phrase_doc.exists: return {"error": "Item not found", "score": 0}
+    correct_text = phrase_doc.get('text_native').lower().strip()
     user_text = attempt.answerText.lower().strip()
-    print(f"Correct text: {correct_text}")
-    print(f"User text: {user_text}")
-
     score = fuzz.ratio(correct_text, user_text) / 100
-    hint = await get_ai_hint(correct_text, user_text, score)
-
-    return {
-        "id": f"attempt_{nanoid.generate()}",
-        "score": score,
-        "hint": hint,
-        "transcription": user_text
-    }
-
-# NEW: UPDATED AUDIO ATTEMPT ENDPOINT
-@app.post("/api/attempt")
-async def handle_attempt(
-    audio_file: UploadFile = File(...), 
-    itemId: str = Form(...)
-):
-    print(f"Received attempt for item: {itemId}")
-    
-    # Use helper function to find the text
-    correct_text = get_correct_text(itemId)
-    if not correct_text:
-        return {"error": "Item not found", "score": 0}
-
-    audio_bytes = await audio_file.read()
-    transcription_result = speech_pipeline(audio_bytes)
-    user_text = transcription_result["text"].lower().strip()
-    print(f"Correct text: {correct_text}")
-    print(f"User text: {user_text}")
-
-    score = fuzz.ratio(correct_text, user_text) / 100
-    hint = await get_ai_hint(correct_text, user_text, score)
-
-    return {
-        "id": f"attempt_{itemId}",
-        "score": score,
-        "hint": hint,
-        "transcription": user_text
-    }
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8080)
