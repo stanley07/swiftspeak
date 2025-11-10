@@ -23,11 +23,12 @@ FROM node:20-alpine
 WORKDIR /app
 ENV NODE_ENV=production PORT=8080 HOSTNAME=0.0.0.0
 
-# Copy standalone bundle
-COPY --from=build /app/apps/web/.next/standalone ./
-# Copy static & public to the **monorepo subpath** the server expects
-COPY --from=build /app/apps/web/.next/static ./apps/web/.next/static
-COPY --from=build /app/apps/web/public ./apps/web/public
+# Copy standalone output
+COPY --from=build /app/apps/web/.next/standalone .
+# Copy static assets
+COPY --from=build /app/apps/web/.next/static ./.next/static
+# Copy public assets
+COPY --from=build /app/apps/web/public ./public
 
 EXPOSE 8080
-CMD ["node", "apps/web/server.js"]
+CMD ["node", "server.js"]
